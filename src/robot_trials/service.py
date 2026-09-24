@@ -10,7 +10,7 @@ from typing import Any, Iterable, Mapping
 
 from .analysis import ALGORITHM_VERSION, analyze
 from .clock import SystemClock, isoformat
-from .contracts import Observation, Protocol, ValidationError
+from .contracts import Observation, Protocol, ValidationError, require_bool
 from .errors import Conflict, Forbidden, InvalidState, NotFound, ValidationFailed
 from .jsonio import canonical_json, content_digest
 from .storage import initialize, transaction
@@ -25,6 +25,16 @@ ROLE_PERMISSIONS = {
     "approver": {"decision.write"},
     "auditor": {"report.read", "audit.read"},
 }
+
+
+def _optional_review_note(value: object) -> str | None:
+    """复核备注：缺省视为空串，显式 null 存 NULL，其余类型一律拒绝。"""
+
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValidationError("note 必须是字符串")
+    return value
 
 
 class TrialService:
@@ -281,9 +291,14 @@ class TrialService:
         return {"exclusion_id": exclusion_id, "status": "pending"}
 
     def review_exclusion(
-        self, actor_id: str, exclusion_id: int, approve: bool, note: str
+        self, actor_id: str, exclusion_id: int, approve: object, note: object
     ) -> dict[str, Any]:
         self._require(actor_id, "exclusion.review")
+        try:
+            approved = require_bool(approve, "approve")
+            review_note = _optional_review_note(note)
+        except ValidationError as exc:
+            raise ValidationFailed(str(exc)) from exc
         row = self.connection.execute(
             "SELECT * FROM exclusion_requests WHERE exclusion_id=?", (exclusion_id,)
         ).fetchone()
@@ -293,14 +308,14 @@ class TrialService:
             raise InvalidState("排除申请已经处理")
         if row["requested_by"] == actor_id:
             raise Forbidden("申请人不能复核自己的排除申请")
-        status = "approved" if approve else "rejected"
+        status = "approved" if approved else "rejected"
         with transaction(self.connection, immediate=True):
             self.connection.execute(
                 "UPDATE exclusion_requests SET status=?,reviewed_by=?,reviewed_at=?,review_note=? "
                 "WHERE exclusion_id=? AND status='pending'",
-                (status, actor_id, self._now(), note, exclusion_id),
+                (status, actor_id, self._now(), review_note, exclusion_id),
             )
-            self._audit("exclusion", str(exclusion_id), f"exclusion.{status}", actor_id, {"note": note})
+            self._audit("exclusion", str(exclusion_id), f"exclusion.{status}", actor_id, {"note": review_note})
         return {"exclusion_id": exclusion_id, "status": status}
 
     def revoke_exclusion(self, actor_id: str, exclusion_id: int, reason: str) -> dict[str, Any]:

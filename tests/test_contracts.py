@@ -4,7 +4,7 @@ import unittest
 from copy import deepcopy
 from pathlib import Path
 
-from robot_trials.contracts import Observation, Protocol, ValidationError
+from robot_trials.contracts import Observation, Protocol, ValidationError, require_bool
 from robot_trials.jsonio import load_json
 
 
@@ -56,6 +56,14 @@ class ContractTests(unittest.TestCase):
         }
         with self.assertRaisesRegex(ValidationError, "必须是 0 或 1"):
             Observation.from_dict(raw, self.protocol)
+
+    def test_require_bool_accepts_only_json_booleans(self) -> None:
+        self.assertIs(require_bool(True, "approve"), True)
+        self.assertIs(require_bool(False, "approve"), False)
+        for invalid in ("false", "true", "", 0, 1, None, [], {}, ["false"]):
+            with self.subTest(repr(invalid)):
+                with self.assertRaisesRegex(ValidationError, "approve 必须是布尔值"):
+                    require_bool(invalid, "approve")
 
 
 if __name__ == "__main__":

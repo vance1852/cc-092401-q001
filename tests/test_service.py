@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from robot_trials.clock import FrozenClock
-from robot_trials.errors import Conflict, Forbidden, InvalidState
+from robot_trials.errors import Conflict, Forbidden, InvalidState, ValidationFailed
 from robot_trials.jsonio import load_json
 from robot_trials.service import TrialService
 
@@ -95,6 +95,63 @@ class ServiceTests(unittest.TestCase):
             (str(observation_id),),
         ).fetchall()
         self.assertEqual([row[0] for row in events], ["exclusion.requested", "exclusion.revoked"])
+
+    def _open_exclusion(self, index: int = 0) -> tuple[int, int]:
+        self.service.import_observations("operator", "batch-a", "key-1", self.rows)
+        # 额外克隆一行，保证七种畸形输入各自占用一条独立观测（重复导入走幂等）。
+        self.service.import_observations(
+            "operator", "batch-a", "key-2", [dict(self.rows[0], source_row="extra-6")]
+        )
+        observation_id = self.connection.execute(
+            "SELECT observation_id FROM observations ORDER BY observation_id LIMIT 1 OFFSET ?",
+            (index,),
+        ).fetchone()[0]
+        exclusion_id = self.service.request_exclusion("operator", observation_id, "现场记录失效")["exclusion_id"]
+        return observation_id, exclusion_id
+
+    def _exclusion_snapshot(self, exclusion_id: int) -> tuple:
+        return tuple(
+            self.connection.execute(
+                "SELECT status,reviewed_by,reviewed_at,review_note "
+                "FROM exclusion_requests WHERE exclusion_id=?",
+                (exclusion_id,),
+            ).fetchone()
+        )
+
+    def _review_audit_count(self, exclusion_id: int) -> int:
+        return self.connection.execute(
+            "SELECT count(*) FROM audit_events WHERE entity_type='exclusion' AND entity_id=?",
+            (str(exclusion_id),),
+        ).fetchone()[0]
+
+    def test_review_approves_and_rejects_on_real_booleans(self) -> None:
+        _, approved_id = self._open_exclusion(0)
+        approved = self.service.review_exclusion("stat", approved_id, True, "证据充分")
+        self.assertEqual(approved["status"], "approved")
+
+        _, rejected_id = self._open_exclusion(1)
+        rejected = self.service.review_exclusion("stat", rejected_id, False, "证据不足")
+        self.assertEqual(rejected["status"], "rejected")
+
+    def test_review_rejects_non_boolean_approve_without_leaving_trace(self) -> None:
+        invalid_inputs = ("false", "true", 0, 1, None, [], {})
+        for index, invalid in enumerate(invalid_inputs):
+            _, exclusion_id = self._open_exclusion(index)
+            before = self._exclusion_snapshot(exclusion_id)
+            with self.subTest(repr(invalid)):
+                with self.assertRaises(ValidationFailed):
+                    self.service.review_exclusion("stat", exclusion_id, invalid, "备注")
+                # 失败请求不能改变排除状态、复核人、时间或备注，也不能写入审计事件。
+                self.assertEqual(self._exclusion_snapshot(exclusion_id), before)
+                self.assertEqual(before, ("pending", None, None, None))
+                self.assertEqual(self._review_audit_count(exclusion_id), 0)
+
+    def test_review_still_enforces_separation_of_duties(self) -> None:
+        _, exclusion_id = self._open_exclusion(0)
+        with self.assertRaises(Forbidden):
+            self.service.review_exclusion("operator", exclusion_id, True, "自己复核")
+        self.assertEqual(self._exclusion_snapshot(exclusion_id), ("pending", None, None, None))
+        self.assertEqual(self._review_audit_count(exclusion_id), 0)
 
     def test_failed_job_returns_to_queue_after_delay(self) -> None:
         self.service.import_observations("operator", "batch-a", "key-1", self.rows)

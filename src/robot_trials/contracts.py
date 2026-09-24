@@ -35,6 +35,13 @@ def _optional_text(value: object, path: str) -> str | None:
     return _required_text(value, path)
 
 
+def require_bool(value: object, path: str) -> bool:
+    # bool 是 int 的子类型，必须先按 bool 精确判定，否则 True/False 会被当成整数放行。
+    if not isinstance(value, bool):
+        raise ValidationError(f"{path} 必须是布尔值")
+    return value
+
+
 def _decimal(value: object, path: str) -> Decimal:
     if isinstance(value, bool):
         raise ValidationError(f"{path} 必须是数值")
