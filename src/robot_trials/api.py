@@ -36,6 +36,16 @@ class JsonApplication:
         return actor
 
     @staticmethod
+    def _required_bool(payload: Mapping[str, Any], field: str) -> bool:
+        if field not in payload:
+            raise ValidationFailed(f"{field} 为必填字段")
+        value = payload[field]
+        # 注意 bool 是 int 的子类，必须显式判定，不能用 bool() 或真值测试。
+        if not isinstance(value, bool):
+            raise ValidationFailed(f"{field} 必须是 JSON 布尔值 true 或 false")
+        return value
+
+    @staticmethod
     def _json(body: bytes) -> dict[str, Any]:
         if not body:
             return {}
@@ -106,7 +116,8 @@ class JsonApplication:
                 return Response(201, result)
             if method == "POST" and len(parts) == 3 and parts[0] == "exclusions" and parts[2] == "review":
                 result = self.service.review_exclusion(
-                    self._actor(normalized_headers), int(parts[1]), bool(payload["approve"]), payload.get("note", "")
+                    self._actor(normalized_headers), int(parts[1]),
+                    self._required_bool(payload, "approve"), payload.get("note", ""),
                 )
                 return Response(200, result)
             if method == "POST" and len(parts) == 3 and parts[0] == "exclusions" and parts[2] == "revoke":

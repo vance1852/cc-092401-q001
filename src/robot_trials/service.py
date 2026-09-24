@@ -284,6 +284,9 @@ class TrialService:
         self, actor_id: str, exclusion_id: int, approve: bool, note: str
     ) -> dict[str, Any]:
         self._require(actor_id, "exclusion.review")
+        if not isinstance(approve, bool):
+            # 不做真值转换：字符串 "false"、0/1、None 等都不能隐式变成批准或驳回。
+            raise ValidationFailed("approve 必须是 JSON 布尔值 true 或 false")
         row = self.connection.execute(
             "SELECT * FROM exclusion_requests WHERE exclusion_id=?", (exclusion_id,)
         ).fetchone()
